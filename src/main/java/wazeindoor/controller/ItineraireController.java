@@ -1,5 +1,8 @@
 package wazeindoor.controller;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import wazeindoor.entity.PointInteret;
@@ -11,8 +14,8 @@ import java.util.List;
 @RequestMapping("/espaces/{espaceId}/itineraire")
 public class ItineraireController {
 
+    private static final Logger logger = LoggerFactory.getLogger(ItineraireController.class);
     private final ItineraireService itineraireService;
-
 
     public ItineraireController(ItineraireService itineraireService) {
         this.itineraireService = itineraireService;
@@ -34,8 +37,15 @@ public class ItineraireController {
             @RequestParam Long start,
             @RequestParam List<Long> waypoints,
             @RequestParam Long end) {
+        logger.info("Requête reçue pour l'itinéraire dans l'espace {}: start={}, waypoints={}, end={}", espaceId, start, waypoints, end);
 
-        List<PointInteret> itineraire = itineraireService.calculerItineraireRapide(espaceId, start, waypoints, end);
-        return ResponseEntity.ok(itineraire);
+        try {
+            List<PointInteret> itineraire = itineraireService.calculerItineraireRapide(espaceId, start, waypoints, end);
+            logger.info("Itinéraire calculé avec succès pour l'espace {}", espaceId);
+            return ResponseEntity.ok(itineraire);
+        } catch (Exception e) {
+            logger.error("Erreur lors du calcul de l'itinéraire dans l'espace {}: {}", espaceId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 }

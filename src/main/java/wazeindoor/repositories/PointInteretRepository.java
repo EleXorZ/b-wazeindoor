@@ -9,4 +9,5 @@ import java.util.Optional;
 public interface PointInteretRepository extends JpaRepository<PointInteret, Long> {
     List<PointInteret> findByEspaceId(Long espaceId);
     Optional<PointInteret> findByEspaceIdAndId(Long espaceId, Long id);
+    long countByIdInAndEspaceId(List<Long> id, Long espaceId);
 }

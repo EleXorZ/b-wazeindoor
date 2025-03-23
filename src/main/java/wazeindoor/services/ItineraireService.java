@@ -1,6 +1,8 @@
 package wazeindoor.services;
 
 import jakarta.persistence.EntityNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import wazeindoor.entity.Chemin;
 import wazeindoor.entity.PointInteret;
@@ -15,6 +17,8 @@ public class ItineraireService {
 
     private final CheminRepository cheminRepository;
     private final PointInteretRepository pointInteretRepository;
+
+    private static final Logger logger = LoggerFactory.getLogger(ItineraireService.class);
 
     public ItineraireService(CheminRepository cheminRepository, PointInteretRepository pointInteretRepository) {
         this.cheminRepository = cheminRepository;
@@ -124,8 +128,19 @@ public class ItineraireService {
     // Itinéraire avec plusieurs points obligatoires
     public List<PointInteret> calculerItineraireRapide(Long espaceId, Long start, List<Long> waypoints, Long end) {
         List<PointInteret> chemin = new ArrayList<>();
-        List<Long> nonVisites = new ArrayList<>(waypoints);
 
+        logger.info("Début du calcul de l'itinéraire depuis le point {} vers le point {} avec les waypoints {}", start, end, waypoints);
+
+        // Vérifier que tous les points sont bien dans l'espace
+        try {
+            verifierPointsDansEspace(espaceId, start, waypoints, end);
+            logger.info("Tous les points sont valides pour l'espace {}", espaceId);
+        } catch (IllegalArgumentException e) {
+            logger.error("Erreur lors de la vérification des points dans l'espace {}: {}", espaceId, e.getMessage());
+            throw e;
+        }
+
+        List<Long> nonVisites = new ArrayList<>(waypoints);
         Long pointActuel = start;
         chemin.add(trouverPoint(espaceId, pointActuel));
 
@@ -134,13 +149,27 @@ public class ItineraireService {
             chemin.add(trouverPoint(espaceId, plusProche));
             nonVisites.remove(plusProche);
             pointActuel = plusProche;
+            logger.debug("Point actuel : {}", pointActuel);
         }
 
         chemin.add(trouverPoint(espaceId, end));
+        logger.info("Itinéraire calculé avec succès, fin à {}", end);
 
         return optimiserItineraire(chemin);
     }
 
+    private void verifierPointsDansEspace(Long espaceId, Long start, List<Long> waypoints, Long end) {
+        List<Long> allPoints = new ArrayList<>();
+        allPoints.add(start);
+        allPoints.addAll(waypoints);
+        allPoints.add(end);
+
+        long count = pointInteretRepository.countByIdInAndEspaceId(allPoints, espaceId);
+
+        if (count != allPoints.size()) {
+            throw new IllegalArgumentException("Certains points n'appartiennent pas à l'espace " + espaceId);
+        }
+    }
 
     private Long trouverPlusProche(Long espaceId, Long origine, List<Long> waypoints) {
         Long plusProche = null;
