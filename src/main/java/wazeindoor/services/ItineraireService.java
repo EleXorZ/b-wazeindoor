@@ -1,63 +1,58 @@
 package wazeindoor.services;
 
+import jakarta.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
 import wazeindoor.entity.Chemin;
-import wazeindoor.entity.Espace;
 import wazeindoor.entity.PointInteret;
 import wazeindoor.repositories.CheminRepository;
-import wazeindoor.repositories.EspaceRepository;
 import wazeindoor.repositories.PointInteretRepository;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class ItineraireService {
 
     private final CheminRepository cheminRepository;
     private final PointInteretRepository pointInteretRepository;
-    private final EspaceRepository espaceRepository;
 
-    public ItineraireService(CheminRepository cheminRepository, PointInteretRepository pointInteretRepository, EspaceRepository espaceRepository) {
+    public ItineraireService(CheminRepository cheminRepository, PointInteretRepository pointInteretRepository) {
         this.cheminRepository = cheminRepository;
         this.pointInteretRepository = pointInteretRepository;
-        this.espaceRepository = espaceRepository;
     }
 
-    public List<PointInteret> calculerItineraire(Long espaceId, Long poiDepartId, Long poiArriveeId) {
-        // Récupération des POIs et des chemins
-        List<PointInteret> pois = pointInteretRepository.findByEspaceId(espaceId);
+    public List<PointInteret> calculerItineraireByDistance(Long espaceId, Long poiDepartId, Long poiArriveeId) {
         List<Chemin> chemins = cheminRepository.findByPoiDepart_Espace_Id(espaceId);
+        Map<Long, List<Chemin>> graphe = chemins.stream()
+                .collect(Collectors.groupingBy(chemin -> chemin.getPoiDepart().getId()));
 
-        // Création du graphe sous forme de liste d’adjacence
-        Map<Long, List<Chemin>> graphe = new HashMap<>();
-        for (Chemin chemin : chemins) {
-            graphe.computeIfAbsent(chemin.getPoiDepart().getId(), k -> new ArrayList<>()).add(chemin);
-        }
+        return dijkstra(poiDepartId, poiArriveeId, graphe);
+    }
 
-        // Initialisation des structures
+    public List<PointInteret> calculerItineraireByLocalisation(Long espaceId, Long poiDepartId, Long poiArriveeId) {
+        List<PointInteret> pois = pointInteretRepository.findByEspaceId(espaceId);
+        Map<Long, List<PointInteret>> graphe = construireGraphe(pois, 3);
+
+        return dijkstra(poiDepartId, poiArriveeId, graphe, pois);
+    }
+
+    private List<PointInteret> dijkstra(Long departId, Long arriveeId, Map<Long, List<Chemin>> graphe) {
         Map<Long, Double> distances = new HashMap<>();
         Map<Long, Long> predecesseurs = new HashMap<>();
         PriorityQueue<Long> pq = new PriorityQueue<>(Comparator.comparing(distances::get));
 
-        for (PointInteret poi : pois) {
-            distances.put(poi.getId(), Double.MAX_VALUE);
-            predecesseurs.put(poi.getId(), null);
-        }
-        distances.put(poiDepartId, 0.0);
-        pq.add(poiDepartId);
+        distances.put(departId, 0.0);
+        pq.add(departId);
 
         while (!pq.isEmpty()) {
             Long currentId = pq.poll();
+            if (currentId.equals(arriveeId)) break;
 
-            if (currentId.equals(poiArriveeId)) {
-                break;
-            }
-
-            for (Chemin chemin : graphe.getOrDefault(currentId, new ArrayList<>())) {
+            for (Chemin chemin : graphe.getOrDefault(currentId, Collections.emptyList())) {
                 Long voisinId = chemin.getPoiArrivee().getId();
-                double nouvelleDistance = distances.get(currentId) + chemin.getDistance();
+                double nouvelleDistance = distances.getOrDefault(currentId, Double.MAX_VALUE) + chemin.getDistance();
 
-                if (nouvelleDistance < distances.get(voisinId)) {
+                if (nouvelleDistance < distances.getOrDefault(voisinId, Double.MAX_VALUE)) {
                     distances.put(voisinId, nouvelleDistance);
                     predecesseurs.put(voisinId, currentId);
                     pq.add(voisinId);
@@ -65,18 +60,139 @@ public class ItineraireService {
             }
         }
 
-        // Reconstruction du chemin
-        List<PointInteret> cheminFinal = new ArrayList<>();
-        Long currentId = poiArriveeId;
-        while (currentId != null) {
-            PointInteret poi = pointInteretRepository.findById(currentId).orElse(null);
-            if (poi != null) {
-                cheminFinal.add(poi);
+        return reconstruireChemin(arriveeId, predecesseurs);
+    }
+
+    private List<PointInteret> dijkstra(Long departId, Long arriveeId, Map<Long, List<PointInteret>> graphe, List<PointInteret> pois) {
+        Map<Long, Double> distances = new HashMap<>();
+        Map<Long, Long> predecesseurs = new HashMap<>();
+        PriorityQueue<Long> pq = new PriorityQueue<>(Comparator.comparing(distances::get));
+
+        distances.put(departId, 0.0);
+        pq.add(departId);
+
+        while (!pq.isEmpty()) {
+            Long currentId = pq.poll();
+            PointInteret current = findPoiById(pois, currentId);
+            if (current == null || currentId.equals(arriveeId)) break;
+
+            for (PointInteret voisin : graphe.getOrDefault(currentId, Collections.emptyList())) {
+                double nouvelleDistance = distances.get(currentId) + calculDistance(current, voisin);
+                if (nouvelleDistance < distances.getOrDefault(voisin.getId(), Double.MAX_VALUE)) {
+                    distances.put(voisin.getId(), nouvelleDistance);
+                    predecesseurs.put(voisin.getId(), currentId);
+                    pq.add(voisin.getId());
+                }
             }
+        }
+
+        return reconstruireChemin(arriveeId, predecesseurs);
+    }
+
+    private List<PointInteret> reconstruireChemin(Long arriveeId, Map<Long, Long> predecesseurs) {
+        List<PointInteret> chemin = new ArrayList<>();
+        Long currentId = arriveeId;
+
+        while (currentId != null) {
+            pointInteretRepository.findById(currentId).ifPresent(chemin::add);
             currentId = predecesseurs.get(currentId);
         }
-        Collections.reverse(cheminFinal);
 
-        return cheminFinal;
+        Collections.reverse(chemin);
+        return chemin;
     }
+
+    private double calculDistance(PointInteret a, PointInteret b) {
+        return Math.hypot(b.getX() - a.getX(), b.getY() - a.getY());
+    }
+
+    private PointInteret findPoiById(List<PointInteret> pois, Long id) {
+        return pois.stream().filter(p -> p.getId().equals(id)).findFirst().orElse(null);
+    }
+
+    private Map<Long, List<PointInteret>> construireGraphe(List<PointInteret> pois, int k) {
+        return pois.stream().collect(Collectors.toMap(
+                PointInteret::getId,
+                poi -> pois.stream()
+                        .filter(p -> !p.getId().equals(poi.getId()))
+                        .sorted(Comparator.comparingDouble(p -> calculDistance(poi, p)))
+                        .limit(k)
+                        .collect(Collectors.toList())
+        ));
+    }
+
+    // Itinéraire avec plusieurs points obligatoires
+    public List<PointInteret> calculerItineraireRapide(Long espaceId, Long start, List<Long> waypoints, Long end) {
+        List<PointInteret> chemin = new ArrayList<>();
+        List<Long> nonVisites = new ArrayList<>(waypoints);
+
+        Long pointActuel = start;
+        chemin.add(trouverPoint(espaceId, pointActuel));
+
+        while (!nonVisites.isEmpty()) {
+            Long plusProche = trouverPlusProche(espaceId, pointActuel, nonVisites);
+            chemin.add(trouverPoint(espaceId, plusProche));
+            nonVisites.remove(plusProche);
+            pointActuel = plusProche;
+        }
+
+        chemin.add(trouverPoint(espaceId, end));
+
+        return optimiserItineraire(chemin);
+    }
+
+
+    private Long trouverPlusProche(Long espaceId, Long origine, List<Long> waypoints) {
+        Long plusProche = null;
+        double minDistance = Double.MAX_VALUE;
+
+        for (Long point : waypoints) {
+            double distance = calculerDistance(trouverPoint(espaceId, origine), trouverPoint(espaceId, point));
+            if (distance < minDistance) {
+                minDistance = distance;
+                plusProche = point;
+            }
+        }
+        return plusProche;
+    }
+
+    private double calculerDistance(PointInteret p1, PointInteret p2) {
+        double dx = p1.getX() - p2.getX();
+        double dy = p1.getY() - p2.getY();
+        return Math.sqrt(dx * dx + dy * dy); // Formule de Pythagore
+    }
+
+    public List<PointInteret> optimiserItineraire(List<PointInteret> chemin) {
+        boolean amelioration = true;
+        while (amelioration) {
+            amelioration = false;
+            for (int i = 1; i < chemin.size() - 2; i++) {
+                for (int j = i + 1; j < chemin.size() - 1; j++) {
+                    if (gainEchange(chemin, i, j)) {
+                        Collections.reverse(chemin.subList(i, j + 1));
+                        amelioration = true;
+                    }
+                }
+            }
+        }
+        return chemin;
+    }
+
+    private boolean gainEchange(List<PointInteret> chemin, int i, int j) {
+        PointInteret A = chemin.get(i - 1);
+        PointInteret B = chemin.get(i);
+        PointInteret C = chemin.get(j);
+        PointInteret D = chemin.get(j + 1);
+
+        double distanceActuelle = calculerDistance(A, B) + calculerDistance(C, D);
+        double nouvelleDistance = calculerDistance(A, C) + calculerDistance(B, D);
+
+        return nouvelleDistance < distanceActuelle;
+    }
+
+    private PointInteret trouverPoint(Long espaceId, Long id) {
+        return pointInteretRepository.findByEspaceIdAndId(espaceId, id)
+                .orElseThrow(() -> new EntityNotFoundException("Point d'intérêt non trouvé : " + id));
+    }
+
 }
